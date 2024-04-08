@@ -1,0 +1,3 @@
+[submodule "external/2023Kursinis"]
+	path = external/2023Kursinis
+	url = https://github.com/KazimierasJasaitis/2023Kursinis
