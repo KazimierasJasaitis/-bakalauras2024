@@ -45,6 +45,14 @@ class PSO:
         self.k_neighbors = 10
         self.neighbor_indices = self.initialize_neighbors()
 
+        self.max_resizing_deviation = 0
+        for size in image_sizes:
+            deviation_per_size = round(abs(self.max_scale - self.min_scale) / (1 / size[0]))
+            deviation_per_size = round(abs(self.max_scale - self.min_scale) / (1 / size[1]))
+            self.max_resizing_deviation += deviation_per_size
+        
+        self.total_area = paper_height * paper_width
+
 
     def compute_fitness_vectorized_np(self, scaling_penalty_factor=20, boundary_penalty_factor=10, 
                                       overlap_penalty_factor=10, uncovered_area_penalty_factor=1):
@@ -52,6 +60,7 @@ class PSO:
         out_of_bound_penalties = np.zeros(self.population_size)
         overlapping_area_penalties = np.zeros(self.population_size)
         uncovered_area_penalties = np.full(self.population_size, self.paper_width * self.paper_height, dtype=np.float64)
+        self.biggest_possible_overlap = np.zeros(self.population_size)
 
         def get_image_data(image_idx):
             X = self.positions[:, image_idx:image_idx+1, 0:1]
@@ -73,8 +82,12 @@ class PSO:
             
             # Calculate the squared differences from the average and sum these differences for each particle
             scale_differences = self.positions[:, :, 2] - average_scales
+            significant = scale_differences > (self.positions[:, :, 2] / np.maximum(self.paper_height, self.paper_width))
             squared_differences = np.square(scale_differences)
-            scaling_penalties = np.sum(squared_differences, axis=1)
+            filtered_squared_differences = squared_differences * significant
+
+            # Step 5: Calculate the scaling penalties by summing the filtered squared differences for each particle
+            scaling_penalties = np.sum(filtered_squared_differences, axis=1)
 
             return scaling_penalties
         
@@ -152,8 +165,8 @@ class PSO:
 
 
         def calculate_overlap(image_idx_A, image_idx_B):
-            _, _, XA1, XA2, YA1, YA2 = get_image_data(image_idx_A)
-            _, _, XB1, XB2, YB1, YB2 = get_image_data(image_idx_B)
+            WA, HA, XA1, XA2, YA1, YA2 = get_image_data(image_idx_A)
+            WB, HB, XB1, XB2, YB1, YB2 = get_image_data(image_idx_B)
 
             # Calculate horizontal and vertical overlaps
             horizontal_overlap = np.maximum(0, np.minimum(XA2, XB2) - np.maximum(XA1, XB1))
@@ -161,7 +174,7 @@ class PSO:
 
             # The area of overlap is simply the product of the horizontal and vertical overlaps
             overlap_area = horizontal_overlap * vertical_overlap
-
+            self.biggest_possible_overlap += np.minimum(WA,WB) * np.minimum(HA,HB)
             return overlap_area
 
 
@@ -172,10 +185,16 @@ class PSO:
                 overlapping_area_penalties += calculate_overlap(i, j)
             # Reiktų pridėt overlapping area penalty tik tom vietom kurios yra inbound ??
             uncovered_area_penalties -= calculate_area_for_image(i) 
-        
 
         uncovered_area_penalties = np.maximum(uncovered_area_penalties, 0.0)
         scaling_penalties = calculate_scaling_penalties()
+
+        # Normalizing penalty weights
+        scaling_penalties = scaling_penalties / self.max_resizing_deviation
+        out_of_bound_penalties = out_of_bound_penalties / ( self.total_area * len(image_sizes))
+        uncovered_area_penalties = uncovered_area_penalties / self.total_area
+        overlapping_area_penalties = overlapping_area_penalties / self.biggest_possible_overlap
+
         fitness = scaling_penalties * scaling_penalty_factor + out_of_bound_penalties * boundary_penalty_factor +\
             uncovered_area_penalties * uncovered_area_penalty_factor + overlapping_area_penalties * overlap_penalty_factor
         return fitness
@@ -246,7 +265,7 @@ class PSO:
 
             best_fitness_idx = np.argmin(self.fitnesses)
             if self.fitnesses[best_fitness_idx] < self.gbest_fitness:
-                sys.stdout.write('\033[K')
+                #sys.stdout.write('\033[K')
                 print(f"New best fitness: {self.fitnesses[best_fitness_idx]}", end='\r')
                 self.gbest_fitness = self.fitnesses[best_fitness_idx]
                 self.gbest_position = self.positions[best_fitness_idx].copy()
@@ -258,13 +277,13 @@ class PSO:
             # Check and reinitialize velocities based on mean velocity magnitude
             mean_velocity = np.mean(np.linalg.norm(self.velocities, axis=1))
             #print(f"mean velocity {mean_velocity}", end='\r')
-            if ((mean_velocity < self.alpha and self.gbest_fitness > 200) or ((self.iterations_without_improvement > self.iterations_without_improvement_limit/2) ))and self.reinitialization_N < 30 :
+            if ((mean_velocity < self.alpha and self.gbest_fitness > 200) or ((self.iterations_without_improvement > self.iterations_without_improvement_limit/2) ))and self.reinitialization_N < 20 :
                 self.reinitialization_N += 1
                 # if self.iterations_without_improvement > self.iterations_without_improvement_limit/4:
                 #     sys.stdout.write('\033[K')
                 #     print(f"Reinitializing velocities: iterations without improvement: {self.iterations_without_improvement} \
                 #           mean velocity: {mean_velocity}", end='\r')
-                print(f"Reinitializing velocities: mean velocity {mean_velocity} is less than  alpha {self.alpha}", end='\r')
+                # print(f"Reinitializing velocities: mean velocity {mean_velocity} is less than  alpha {self.alpha}", end='\r')
                 self.positions = np.empty((self.population_size, self.N, 3))
                 self.positions[:, :, 0] = np.random.uniform(0, self.paper_width, (self.population_size, self.N))
                 self.positions[:, :, 1] = np.random.uniform(0, self.paper_height, (self.population_size, self.N))
@@ -290,13 +309,13 @@ class PSO:
 if __name__ == "__main__":
 
     paper_width = 100
-    paper_height = 120
+    paper_height = 80
     paper_size = (paper_width, paper_height)
-    image_sizes = [[100,20],[100,20],[100,20],[100,20],[100,20],[100,20]]
+    image_sizes = [[100,20],[100,20],[100,20],[100,20]]
     N = len(image_sizes)
-    population_size = 1000
+    population_size = 100
     desired_fitness = 0
-    iterations_without_improvement_limit = 4000
+    iterations_without_improvement_limit = 2000
     w, c1, c2 = 0.729, 1.49455, 1.49455
     # w, c1, c2 = 0.7, 1, 2
     #w, c1, c2 = 0.3, 1.5, 1.5
